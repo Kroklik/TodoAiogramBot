@@ -71,6 +71,7 @@ def get_all_tasks():
         ''')
     result = cursor.fetchall()
     cursor.close()
+    conn.close()
     return result
 
 
@@ -94,6 +95,32 @@ def mark_as_completed(chat_id, task_name):
     conn.commit()
     cursor.close()
     conn.close()
+
+
+def get_all_uncompleted_tasks():
+    conn = sqlite3.connect('tasks.db')
+    cursor = conn.cursor()
+
+    cursor.execute('''
+        SELECT * FROM Task WHERE completed = 0;
+    ''')
+    result = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return result
+
+
+def get_all_uncompleted_tasks_via_chat_id(chat_id):
+    conn = sqlite3.connect('tasks.db')
+    cursor = conn.cursor()
+
+    cursor.execute('''
+        SELECT * FROM Task WHERE completed = 0 and user_id = ?;
+    ''', (chat_id,))
+    result = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return result
 
 
 def drop_table_task():

@@ -2,7 +2,7 @@ from aiogram.types import Message, CallbackQuery
 from aiogram import Dispatcher, Bot, executor
 from aiogram import types
 from database import insert_into_table, get_tasks_via_chat_id, get_all_tasks, delete_task_via_chat_id_and_name, \
-    mark_as_completed
+    mark_as_completed, get_all_uncompleted_tasks, get_all_uncompleted_tasks_via_chat_id
 from aiogram.dispatcher import FSMContext
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher.filters.state import State, StatesGroup
@@ -12,15 +12,16 @@ from functions import is_valid_date, check_text
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from datetime import datetime
 from functions import show_task, show_many_tasks
+from apscheduler.triggers.cron import CronTrigger
+import pytz
 
+TIMEZONE = pytz.timezone('Asia/Tashkent')
 storage = MemoryStorage()
 bot = Bot(TOKEN)
 
 dp = Dispatcher(bot=bot, storage=storage)
 
 scheduler = AsyncIOScheduler()
-
-current_date = datetime.now().strftime('%Y-%m-%d')
 
 
 class Todo(StatesGroup):
@@ -175,6 +176,14 @@ async def show_all_tasks(callback: CallbackQuery):
                            reply_markup=start_menu())
 
 
+@dp.callback_query_handler(lambda c: c.data == 'show_uncompleted')
+async def show_all_uncompleted(callback: CallbackQuery):
+    chat_id = callback.from_user.id
+    await callback.answer()
+    await bot.send_message(chat_id, show_many_tasks(get_all_uncompleted_tasks_via_chat_id(chat_id)), parse_mode='HTML',
+                           reply_markup=start_menu())
+
+
 # ----------------------------------------------------------------------------------------------------------------------
 # -----------------------------------------------TASKS DELETING BLOCK---------------------------------------------------
 # ----------------------------------------------------------------------------------------------------------------------
@@ -184,7 +193,8 @@ async def show_all_tasks(callback: CallbackQuery):
 async def ask_for_name_to_delete(callback: CallbackQuery):
     chat_id = callback.from_user.id
     await bot.send_message(chat_id, '🗑️ Введите название задачи, которую вы хотите удалить:')
-    await bot.send_message(chat_id, f'📝 Вот все ваши задачи: \n{show_many_tasks(get_tasks_via_chat_id(chat_id))}',
+    await bot.send_message(chat_id,
+                           f'📝 Вот все ваши задачи: \n{show_many_tasks(get_tasks_via_chat_id(chat_id))}',
                            parse_mode='HTML')
     await TaskDelete.task_name.set()
 
@@ -193,6 +203,9 @@ async def ask_for_name_to_delete(callback: CallbackQuery):
 async def confirm_name_ask_confirmation(message: Message, state: FSMContext):
     chat_id = message.from_user.id
     task_name = message.text
+    if check_text(task_name):
+        await handle_cancel(message, state)
+        return
     existing_tasks = get_tasks_via_chat_id(chat_id)
 
     # Флаг для отслеживания существования задачи
@@ -236,7 +249,8 @@ async def ask_for_task_name_to_mark(callback: CallbackQuery):
     chat_id = callback.from_user.id
     await callback.answer()
     await bot.send_message(chat_id, '✅ Введите название задачи, которую вы хотите отметить выполненной:')
-    await bot.send_message(chat_id, f'📝 Вот все ваши задачи: \n{show_many_tasks(get_tasks_via_chat_id(chat_id))}',
+    await bot.send_message(chat_id,
+                           f'📝 Вот все ваши невыполненные задачи: \n{show_many_tasks(get_all_uncompleted_tasks_via_chat_id(chat_id))}',
                            parse_mode='HTML')
     await TaskUpdate.task_name.set()
 
@@ -244,6 +258,9 @@ async def ask_for_task_name_to_mark(callback: CallbackQuery):
 @dp.message_handler(state=TaskUpdate.task_name)
 async def mark_as_completed_func(message: Message, state: FSMContext):
     task_name = message.text
+    if check_text(task_name):
+        await handle_cancel(message, state)
+        return
     existing_tasks = get_tasks_via_chat_id(message.from_user.id)
     task_found = False
     for task in existing_tasks:
@@ -255,8 +272,8 @@ async def mark_as_completed_func(message: Message, state: FSMContext):
             await state.update_data(task_name=task_name)
             await state.finish()
             return
-        if not task_found:
-            await bot.send_message(message.from_user.id, '❌ Задачи с таким именем не существует.')
+    if not task_found:
+        await bot.send_message(message.from_user.id, '❌ Задачи с таким именем не существует.')
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -271,24 +288,24 @@ async def handle_cancel(message: Message, state: FSMContext):
 
 # ------------------------------------------------------REMINDER---------------------------------------------------------
 async def send_reminders():
-    print('Начало оповещения')
-    all_tasks = get_all_tasks()
+    today_date = datetime.now().strftime('%Y-%m-%d')
+    all_tasks = get_all_uncompleted_tasks()
     for task in all_tasks:
-        if task[-3] == current_date:
+        if task[4] == today_date:
             chat_id = task[1]
             task_name = task[2]
             await bot.send_message(chat_id,
                                    f'🔔 Напоминаем, что вы поставили задачу: "{task_name}" на сегодняшнюю дату {task[4]}.')
 
 
-# ------------------------------------------------------AUTO TASKS DELETE-----------------------------------------------
+# ------------------------------------------------AUTO TASKS DELETE-----------------------------------------------------
 async def tasks_auto_delete():
-    current_date = datetime.now().strftime('%Y-%m-%d')
+    c1_date = datetime.now().strftime('%Y-%m-%d')
     all_tasks = get_all_tasks()
 
     for task in all_tasks:
-        c_date = datetime.strptime(current_date, '%Y-%m-%d')
-        task_deadline = datetime.strptime(task[-2], '%Y-%m-%d')
+        c_date = datetime.strptime(c1_date, '%Y-%m-%d')
+        task_deadline = datetime.strptime(task[5], '%Y-%m-%d')
 
         # Проверяем, если дедлайн уже прошел
         if task_deadline < c_date:
@@ -303,10 +320,13 @@ async def tasks_auto_delete():
 
 try:
     print(get_all_tasks()[-1])
+    current_date = datetime.now().strftime('%Y-%m-%d')
+    print(current_date)
+
 except Exception as e:
     print(e)
 
-scheduler.add_job(send_reminders, 'interval', hours=24)
+scheduler.add_job(send_reminders, CronTrigger(hour='10,14,18', minute=0, timezone=TIMEZONE))
 scheduler.add_job(tasks_auto_delete, 'interval', hours=24)
 scheduler.start()
 
